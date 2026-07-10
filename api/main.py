@@ -10,11 +10,10 @@ logger = logging.getLogger(__name__)
 
 # Environment variables
 TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-# OpenHands API Key and Base URL
 OPENHANDS_API_KEY = os.getenv('OPENHANDS_API_KEY')
 OPENHANDS_BASE_URL = os.getenv('OPENHANDS_BASE_URL', 'https://app.all-hands.dev')
 
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
 # --- Telegram Bot Handlers ---
@@ -33,12 +32,11 @@ def send_welcome(message):
 @bot.message_handler(commands=['list'])
 def list_conversations(message):
     if not OPENHANDS_API_KEY:
-        bot.reply_to(message, "❌ OpenHands API Key is not set. Please set the `OPENHANDS_API_KEY` environment variable.")
+        bot.reply_to(message, "❌ OpenHands API Key is not set in Vercel environment variables.")
         return
 
     try:
         headers = {'X-Session-API-Key': OPENHANDS_API_KEY}
-        # Based on research, the endpoint is likely /api/v1/app-conversations
         response = requests.get(f"{OPENHANDS_BASE_URL}/api/v1/app-conversations", headers=headers)
         
         if response.status_code == 200:
@@ -48,7 +46,10 @@ def list_conversations(message):
                 return
             
             text = "📂 *Your OpenHands Conversations:*\n\n"
-            for conv in conversations[:10]: # List top 10
+            # Adjust based on actual API response structure if needed
+            items = conversations if isinstance(conversations, list) else conversations.get('results', [])
+            
+            for conv in items[:10]:
                 title = conv.get('title', 'Untitled')
                 conv_id = conv.get('id', 'N/A')
                 status = conv.get('status', 'unknown')
@@ -56,9 +57,9 @@ def list_conversations(message):
             
             bot.reply_to(message, text, parse_mode='Markdown')
         else:
-            bot.reply_to(message, f"❌ Failed to fetch conversations. Error: {response.status_code}")
+            bot.reply_to(message, f"❌ Failed to fetch conversations. Status: {response.status_code}")
     except Exception as e:
-        logger.error(f"Error fetching conversations: {e}")
+        logger.error(f"Error: {e}")
         bot.reply_to(message, f"❌ An error occurred: {str(e)}")
 
 @bot.message_handler(commands=['help'])
@@ -73,45 +74,28 @@ def index():
 
 @app.route('/webhook', methods=['POST'])
 def handle_webhook():
-    """Handle incoming updates from Telegram or OpenHands notifications."""
-    # Check if it's a Telegram update
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         
-        # If it has a 'message' field, it's likely a Telegram update
         if update and (update.message or update.callback_query):
             bot.process_new_updates([update])
             return '', 200
         
-        # Otherwise, check if it's a custom notification from OpenHands
         data = request.json
         if data and 'message' in data:
-            message = data.get('message', 'OpenHands task finished!')
-            target_chat_id = data.get('chat_id')
-            if target_chat_id:
+            msg = data.get('message', 'OpenHands task finished!')
+            cid = data.get('chat_id')
+            if cid:
                 try:
-                    bot.send_message(target_chat_id, message)
+                    bot.send_message(cid, msg)
                     return jsonify({"status": "success"}), 200
                 except Exception as e:
                     return jsonify({"error": str(e)}), 500
-            return jsonify({"error": "chat_id required for notifications"}), 400
+            return jsonify({"error": "chat_id required"}), 400
 
     return "Invalid request", 400
 
-@app.route('/set_webhook', methods=['GET'])
-def set_webhook():
-    """Utility to set the Telegram webhook."""
-    webhook_url = request.args.get('url')
-    if not webhook_url:
-        # Try to infer from host
-        webhook_url = f"https://{request.host}/webhook"
-    
-    success = bot.set_webhook(url=webhook_url)
-    if success:
-        return f"Webhook successfully set to {webhook_url}", 200
-    else:
-        return "Failed to set webhook", 500
-
+# Vercel needs 'app'
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
